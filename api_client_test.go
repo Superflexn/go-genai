@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -321,7 +322,7 @@ func TestSendStreamRequest(t *testing.T) {
 			mockResponse:     `invalid json`,
 			mockStatusCode:   http.StatusBadRequest,
 			wantErr:          true,
-			wantErrorMessage: "newAPIError: unmarshal response to error failed: invalid character 'i' looking for beginning of value. Response: invalid json",
+			wantErrorMessage: "Error 400, Message: invalid json, Status: 400 Bad Request, Details: []",
 		},
 		{
 			name:             "Error Response with server error",
@@ -351,7 +352,7 @@ func TestSendStreamRequest(t *testing.T) {
 			mockResponse:     `invalid json`,
 			mockStatusCode:   http.StatusInternalServerError,
 			wantErr:          true,
-			wantErrorMessage: "newAPIError: unmarshal response to error failed: invalid character 'i' looking for beginning of value. Response: invalid json",
+			wantErrorMessage: "Error 500, Message: invalid json, Status: 500 Internal Server Error, Details: []",
 		},
 		{
 			name:           "Request Error",
@@ -549,8 +550,9 @@ func TestBuildRequest(t *testing.T) {
 		{
 			name: "MLDev API with API Key",
 			clientConfig: &ClientConfig{
-				APIKey:  "test-api-key",
-				Backend: BackendGeminiAPI,
+				APIKey:     "test-api-key",
+				Backend:    BackendGeminiAPI,
+				HTTPClient: &http.Client{},
 			},
 			path:   "models/test-model:generateContent",
 			body:   map[string]any{"key": "value"},
@@ -586,6 +588,7 @@ func TestBuildRequest(t *testing.T) {
 				Project:     "test-project",
 				Location:    "test-location",
 				Backend:     BackendVertexAI,
+				HTTPClient:  &http.Client{},
 				Credentials: &auth.Credentials{},
 			},
 			path:   "models/test-model:generateContent",
@@ -621,6 +624,7 @@ func TestBuildRequest(t *testing.T) {
 				Project:     "test-project",
 				Location:    "test-location",
 				Backend:     BackendVertexAI,
+				HTTPClient:  &http.Client{},
 				Credentials: &auth.Credentials{},
 			},
 			path:   "projects/test-project/locations/test-location/models/test-model:generateContent",
@@ -656,6 +660,7 @@ func TestBuildRequest(t *testing.T) {
 				Project:     "test-project",
 				Location:    "test-location",
 				Backend:     BackendVertexAI,
+				HTTPClient:  &http.Client{},
 				Credentials: &auth.Credentials{},
 			},
 			path:   "publishers/google/models/model-name",
@@ -684,8 +689,9 @@ func TestBuildRequest(t *testing.T) {
 		{
 			name: "MLDev with empty body",
 			clientConfig: &ClientConfig{
-				APIKey:  "test-api-key",
-				Backend: BackendGeminiAPI,
+				APIKey:     "test-api-key",
+				Backend:    BackendGeminiAPI,
+				HTTPClient: &http.Client{},
 			},
 			path:   "models/test-model:generateContent",
 			body:   map[string]any{},
@@ -717,6 +723,7 @@ func TestBuildRequest(t *testing.T) {
 				Project:     "test-project",
 				Location:    "test-location",
 				Backend:     BackendVertexAI,
+				HTTPClient:  &http.Client{},
 				Credentials: &auth.Credentials{},
 			},
 			path:   "models/test-model:generateContent",
@@ -745,8 +752,9 @@ func TestBuildRequest(t *testing.T) {
 		{
 			name: "Invalid URL",
 			clientConfig: &ClientConfig{
-				APIKey:  "test-api-key",
-				Backend: BackendGeminiAPI,
+				APIKey:     "test-api-key",
+				HTTPClient: &http.Client{},
+				Backend:    BackendGeminiAPI,
 			},
 			path:   ":invalid",
 			body:   map[string]any{},
@@ -761,8 +769,9 @@ func TestBuildRequest(t *testing.T) {
 		{
 			name: "Invalid json",
 			clientConfig: &ClientConfig{
-				APIKey:  "test-api-key",
-				Backend: BackendGeminiAPI,
+				APIKey:     "test-api-key",
+				Backend:    BackendGeminiAPI,
+				HTTPClient: &http.Client{},
 			},
 			path:   "models/test-model:generateContent",
 			body:   map[string]any{"key": make(chan int)},
@@ -828,13 +837,14 @@ func Test_sdkHeader(t *testing.T) {
 		ac *apiClient
 	}
 	tests := []struct {
-		name string
-		args args
-		want http.Header
+		name           string
+		args           args
+		contextTimeout time.Duration
+		want           http.Header
 	}{
 		{
 			name: "with_api_key",
-			args: args{&apiClient{clientConfig: &ClientConfig{APIKey: "test_api_key"}}},
+			args: args{&apiClient{clientConfig: &ClientConfig{APIKey: "test_api_key", HTTPClient: &http.Client{}}}},
 			want: http.Header{
 				"Content-Type":      []string{"application/json"},
 				"X-Goog-Api-Key":    []string{"test_api_key"},
@@ -844,21 +854,95 @@ func Test_sdkHeader(t *testing.T) {
 		},
 		{
 			name: "without_api_key",
-			args: args{&apiClient{clientConfig: &ClientConfig{}}},
+			args: args{&apiClient{clientConfig: &ClientConfig{HTTPClient: &http.Client{}}}},
 			want: http.Header{
 				"Content-Type":      []string{"application/json"},
 				"User-Agent":        []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
 				"X-Goog-Api-Client": []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
 			},
 		},
+		{
+			name:           "with_context_timeout",
+			args:           args{&apiClient{clientConfig: &ClientConfig{HTTPClient: &http.Client{}}}},
+			contextTimeout: 1 * time.Minute,
+			want: http.Header{
+				"Content-Type":      []string{"application/json"},
+				"User-Agent":        []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
+				"X-Goog-Api-Client": []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
+				"X-Server-Timeout":  []string{"59"}, // Not exact match contextTimeout because the result is subtracting the time elapsed.
+			},
+		},
+		{
+			name: "with_request_timeout",
+			args: args{&apiClient{clientConfig: &ClientConfig{HTTPClient: &http.Client{Timeout: 1 * time.Minute}}}},
+			want: http.Header{
+				"Content-Type":      []string{"application/json"},
+				"User-Agent":        []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
+				"X-Goog-Api-Client": []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
+				"X-Server-Timeout":  []string{"60"}, // request timeout is exact match because it's native to the HTTPClient.
+			},
+		},
+		{
+			name:           "with_request_context_timeout",
+			args:           args{&apiClient{clientConfig: &ClientConfig{HTTPClient: &http.Client{Timeout: 1 * time.Minute}}}},
+			contextTimeout: 30 * time.Second,
+			want: http.Header{
+				"Content-Type":      []string{"application/json"},
+				"User-Agent":        []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
+				"X-Goog-Api-Client": []string{fmt.Sprintf("google-genai-sdk/%s gl-go/%s", version, runtime.Version())},
+				"X-Server-Timeout":  []string{"29"}, // Not exact match contextTimeout because the result is subtracting the time elapsed.
+			},
+		},
 	}
+
 	for _, tt := range tests {
+		ctx := context.Background()
+		var cancel context.CancelFunc
+		if tt.contextTimeout != 0 {
+			ctx, cancel = context.WithTimeout(ctx, tt.contextTimeout)
+			defer cancel()
+		}
+
 		t.Run(tt.name, func(t *testing.T) {
-			if diff := cmp.Diff(sdkHeader(tt.args.ac), tt.want); diff != "" {
+			if diff := cmp.Diff(sdkHeader(ctx, tt.args.ac), tt.want, cmp.Comparer(compareHeadersWithTolerance)); diff != "" {
 				t.Errorf("sdkHeader() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
+}
+
+func compareHeadersWithTolerance(want, got http.Header) bool {
+	wantClone := want.Clone()
+	gotClone := got.Clone()
+
+	wantTimeoutStr := wantClone.Get("X-Server-Timeout")
+	gotTimeoutStr := gotClone.Get("X-Server-Timeout")
+	wantClone.Del("X-Server-Timeout")
+	gotClone.Del("X-Server-Timeout")
+
+	if !cmp.Equal(wantClone, gotClone) {
+		return false
+	}
+	if wantTimeoutStr == "" && gotTimeoutStr == "" {
+		return true
+	}
+	if wantTimeoutStr == "" || gotTimeoutStr == "" {
+		return false
+	}
+
+	gotTimeoutVal, err := strconv.ParseInt(gotTimeoutStr, 10, 64)
+	if err != nil {
+		fmt.Printf("Warning: Could not parse got X-Server-Timeout value '%s'\n", gotTimeoutStr)
+		return false
+	}
+
+	wantTimeoutVal, err := strconv.ParseInt(wantTimeoutStr, 10, 64)
+	if err != nil {
+		fmt.Printf("Warning: Could not parse got X-Server-Timeout value '%s'\n", wantTimeoutStr)
+		return false
+	}
+
+	return math.Abs(float64(wantTimeoutVal-gotTimeoutVal)) <= 1
 }
 
 // createTestFile creates a temporary file with the specified size containing dummy text data.
@@ -903,10 +987,11 @@ func createTestFile(t *testing.T, size int64) (string, func()) {
 }
 
 // mockUploadServer simulates the resumable upload endpoint.
-func mockUploadServer(t *testing.T, expectedSize int64) (*httptest.Server, *sync.Map) {
+func mockUploadServer(t *testing.T, expectedSize int64, headers []http.Header) (*httptest.Server, *sync.Map) {
 	t.Helper()
 	var totalReceived int64
 	var mu sync.Mutex
+	currentIndex := 0
 	// Use sync.Map to store received data per upload URL (though in this test we only use one)
 	receivedData := &sync.Map{}
 
@@ -915,11 +1000,9 @@ func mockUploadServer(t *testing.T, expectedSize int64) (*httptest.Server, *sync
 			http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
 			return
 		}
-
 		uploadCommand := r.Header.Get("X-Goog-Upload-Command")
 		uploadOffsetStr := r.Header.Get("X-Goog-Upload-Offset")
 		contentLengthStr := r.Header.Get("Content-Length")
-
 		uploadOffset, err := strconv.ParseInt(uploadOffsetStr, 10, 64)
 		if err != nil {
 			http.Error(w, "Invalid X-Goog-Upload-Offset", http.StatusBadRequest)
@@ -953,23 +1036,26 @@ func mockUploadServer(t *testing.T, expectedSize int64) (*httptest.Server, *sync
 		}
 
 		// Store received data chunk (optional, but useful for verification)
-		receivedData.Store(uploadOffset, bodyBytes)
-
 		mu.Lock()
-		totalReceived += contentLength
+		for key, value := range headers[currentIndex] {
+			w.Header().Set(key, value[0])
+		}
 		currentTotal := totalReceived
+		isEmptyUploadStatus := headers[currentIndex].Get("X-Goog-Upload-Status") == ""
+		if !isEmptyUploadStatus {
+			totalReceived += contentLength
+			currentTotal = totalReceived
+		}
+		currentIndex++
 		mu.Unlock()
-
 		isFinal := strings.Contains(uploadCommand, "finalize")
 
-		if isFinal {
+		if isFinal && !isEmptyUploadStatus {
 			if currentTotal != expectedSize {
 				t.Errorf("Final size mismatch: expected %d, received %d", expectedSize, currentTotal)
 				http.Error(w, "Final size mismatch", http.StatusBadRequest)
 				return
 			}
-			w.Header().Set("X-Goog-Upload-Status", "final")
-			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			finalFile := map[string]any{
 				"file": map[string]any{
@@ -984,7 +1070,6 @@ func mockUploadServer(t *testing.T, expectedSize int64) (*httptest.Server, *sync
 				return
 			}
 		} else {
-			w.Header().Set("X-Goog-Upload-Status", "active")
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
@@ -996,12 +1081,46 @@ func TestUploadFile(t *testing.T) {
 	ctx := context.Background()
 
 	testSizes := []struct {
-		name string
-		size int64 // Size in bytes
+		name    string
+		size    int64 // Size in bytes
+		headers []http.Header
 	}{
-		{"1MB", 1 * 1024 * 1024},
-		{"8MB", 8 * 1024 * 1024}, // Exactly maxChunkSize
-		{"9MB", 9 * 1024 * 1024}, // Requires multiple chunks
+		{"1MB", 1 * 1024 * 1024, []http.Header{
+			{
+				"Content-Type":         []string{"application/json"},
+				"X-Goog-Upload-Status": []string{"final"},
+			},
+		}},
+		{"8MB", 8 * 1024 * 1024, []http.Header{
+			{
+				"X-Goog-Upload-Status": []string{"active"},
+			},
+			{
+				"Content-Type":         []string{"application/json"},
+				"X-Goog-Upload-Status": []string{"final"},
+			},
+		}}, // Exactly maxChunkSize
+		{"9MB", 9 * 1024 * 1024, []http.Header{
+			{
+				"X-Goog-Upload-Status": []string{"active"},
+			},
+			{
+				"Content-Type":         []string{"application/json"},
+				"X-Goog-Upload-Status": []string{"final"},
+			},
+		}}, // Requires multiple chunks
+		{"9MB-missing-header", 9 * 1024 * 1024, []http.Header{
+			{
+				"X-Goog-Upload-Status": []string{"active"},
+			},
+			{
+				"X-Goog-Upload-Status": []string{""},
+			},
+			{
+				"Content-Type":         []string{"application/json"},
+				"X-Goog-Upload-Status": []string{"final"},
+			},
+		}}, // Requires multiple chunks
 	}
 
 	for _, ts := range testSizes {
@@ -1009,7 +1128,7 @@ func TestUploadFile(t *testing.T) {
 			filePath, cleanup := createTestFile(t, ts.size)
 			defer cleanup()
 
-			server, _ := mockUploadServer(t, ts.size)
+			server, _ := mockUploadServer(t, ts.size, ts.headers)
 			defer server.Close()
 
 			ac := &apiClient{
